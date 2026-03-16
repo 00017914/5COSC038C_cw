@@ -1,0 +1,5 @@
+step,parameters,affected_columns,timestamp
+load_file,"{""file_type"": ""csv""}",ALL,2026-03-15T15:00:00
+fill_missing,"{""column"": ""profit"", ""method"": ""median""}",profit,2026-03-15T15:01:10
+standardize_case,"{""column"": ""category"", ""style"": ""title""}",category,2026-03-15T15:02:00
+scale_numeric,"{""columns"": [""sales_amount"", ""profit""], ""method"": ""zscore""}","sales_amount,profit",2026-03-15T15:03:25

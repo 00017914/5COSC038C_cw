@@ -66,23 +66,10 @@ The repository includes two sample datasets:
 
 Both satisfy the coursework testing constraints with more than 1,000 rows, at least 8 columns, mixed data types, missing values, and duplicates.
 
-## Submission checklist
+## Deployment URL
 
-The coursework brief requires all of the following to be submitted:
+https://5cosc038ccw-zroaqngcusurccvaesuqin.streamlit.app/
 
-- ZIP file with the code and documents
-- `app.py`
-- `requirements.txt`
-- `README.md`
-- `sample_data/` with at least two datasets
-- all chat and prompts used during development
-- short demo video (3 to 5 minutes)
-- transformation report output example
-- `AI_USAGE.md`
-- deployed Streamlit URL
-- a separate maximum 2-page team report where AI use is forbidden
 
-## Important note about the final report
 
-The brief says AI use is strictly forbidden for the final 2-page journey report. Because of that, this repository does not auto-generate that report. It should be written manually by the student team.
 

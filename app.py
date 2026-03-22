@@ -1,10 +1,12 @@
 import io
 import json
+import os
 from copy import deepcopy
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -23,6 +25,7 @@ def init_state() -> None:
         "history": [],
         "log": [],
         "source_name": None,
+        "ai_chart_suggestion": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -30,7 +33,7 @@ def init_state() -> None:
 
 
 def reset_session() -> None:
-    for key in ["original_df", "working_df", "history", "log", "source_name"]:
+    for key in ["original_df", "working_df", "history", "log", "source_name", "ai_chart_suggestion"]:
         st.session_state[key] = None if key in {"original_df", "working_df", "source_name"} else []
 
 
@@ -195,13 +198,123 @@ def outlier_summary(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def parse_mapping_text(mapping_text: str) -> dict:
-    mapping = {}
-    for line in mapping_text.splitlines():
-        if "=>" in line:
-            source, target = line.split("=>", 1)
-            mapping[source.strip()] = target.strip()
-    return mapping
+def mapping_from_editor(mapping_df: pd.DataFrame) -> dict:
+    if mapping_df.empty:
+        return {}
+    cleaned = mapping_df.fillna("").copy()
+    cleaned["source"] = cleaned["source"].astype(str).str.strip()
+    cleaned["target"] = cleaned["target"].astype(str).str.strip()
+    cleaned = cleaned[(cleaned["source"] != "") & (cleaned["target"] != "")]
+    return dict(zip(cleaned["source"], cleaned["target"]))
+
+
+def evaluate_formula_expression(df: pd.DataFrame, expression: str) -> pd.Series:
+    local_scope = {column: df[column] for column in df.columns}
+    local_scope.update(
+        {
+            "pd": pd,
+            "np": np,
+            "log": np.log,
+            "log10": np.log10,
+            "sqrt": np.sqrt,
+            "abs": np.abs,
+            "round": np.round,
+        }
+    )
+    result = eval(expression, {"__builtins__": {}}, local_scope)
+    if isinstance(result, pd.Series):
+        return result
+    if np.isscalar(result):
+        return pd.Series([result] * len(df), index=df.index)
+    return pd.Series(result, index=df.index)
+
+
+def build_chart_suggestion_prompt(df: pd.DataFrame, user_goal: str) -> str:
+    numeric_cols = numeric_columns(df)
+    categorical_cols = df.select_dtypes(include=["object", "category", "string", "bool"]).columns.tolist()
+    datetime_cols = df.select_dtypes(include=["datetime", "datetimetz"]).columns.tolist()
+    preview = df.head(5).to_dict(orient="records")
+    schema = {
+        "row_count": len(df),
+        "columns": df.columns.tolist(),
+        "numeric_columns": numeric_cols,
+        "categorical_columns": categorical_cols,
+        "datetime_columns": datetime_cols,
+        "missing_pct": (df.isna().mean() * 100).round(2).to_dict(),
+        "sample_rows": preview,
+    }
+    return (
+        "You are helping inside a Streamlit data visualization builder. "
+        "Suggest the best single chart configuration for the user's goal. "
+        "Return only valid JSON with keys: "
+        "plot_type, x_col, y_col, group_col, aggregation, title, rationale. "
+        "Allowed plot_type values: histogram, box_plot, scatter_plot, line_chart, bar_chart, heatmap_correlation. "
+        "Allowed aggregation values: none, sum, mean, count, median. "
+        "Use group_col as 'None' if grouping is not useful. Use y_col as 'None' when not needed. "
+        "Choose only columns that exist in the schema.\n\n"
+        f"User goal: {user_goal or 'Recommend the most informative chart for this dataset.'}\n\n"
+        f"Dataset schema: {json.dumps(schema, default=str)}"
+    )
+
+
+def get_openai_api_key() -> str | None:
+    if os.getenv("OPENAI_API_KEY"):
+        return os.getenv("OPENAI_API_KEY")
+    try:
+        return st.secrets.get("OPENAI_API_KEY")
+    except Exception:
+        return None
+
+
+def get_chart_suggestion_from_openai(df: pd.DataFrame, user_goal: str, model_name: str, temperature: float) -> dict:
+    from openai import OpenAI
+
+    api_key = get_openai_api_key()
+    if not api_key:
+        raise ValueError("No OPENAI_API_KEY found. Add it as an environment variable or Streamlit secret.")
+
+    client = OpenAI(api_key=api_key)
+    response = client.responses.create(
+        model=model_name,
+        temperature=temperature,
+        instructions="You are an optional AI assistant for a Streamlit coursework app. Outputs may be imperfect.",
+        input=build_chart_suggestion_prompt(df, user_goal),
+    )
+    content = response.output_text.strip()
+    cleaned = content
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        cleaned = cleaned.replace("json\n", "", 1).strip()
+    suggestion = json.loads(cleaned)
+    return suggestion
+
+
+def normalize_chart_suggestion(df: pd.DataFrame, suggestion: dict) -> dict:
+    valid_plot_types = {"histogram", "box_plot", "scatter_plot", "line_chart", "bar_chart", "heatmap_correlation"}
+    valid_aggs = {"none", "sum", "mean", "count", "median"}
+    columns = df.columns.tolist()
+
+    normalized = {
+        "plot_type": suggestion.get("plot_type", "bar_chart"),
+        "x_col": suggestion.get("x_col", columns[0] if columns else "None"),
+        "y_col": suggestion.get("y_col", "None"),
+        "group_col": suggestion.get("group_col", "None"),
+        "aggregation": suggestion.get("aggregation", "none"),
+        "title": suggestion.get("title", ""),
+        "rationale": suggestion.get("rationale", ""),
+    }
+
+    if normalized["plot_type"] not in valid_plot_types:
+        normalized["plot_type"] = "bar_chart"
+    if normalized["aggregation"] not in valid_aggs:
+        normalized["aggregation"] = "none"
+    if normalized["x_col"] not in columns:
+        normalized["x_col"] = columns[0] if columns else "None"
+    if normalized["y_col"] != "None" and normalized["y_col"] not in columns:
+        normalized["y_col"] = "None"
+    if normalized["group_col"] != "None" and normalized["group_col"] not in columns:
+        normalized["group_col"] = "None"
+    return normalized
 
 
 def render_upload_overview() -> None:
@@ -412,10 +525,20 @@ def render_cleaning_preparation() -> None:
                 apply_update(updated, "standardize_category", {"column": column, "action": case_action}, [column])
                 st.rerun()
 
-            mapping_text = st.text_area("Mapping dictionary", placeholder="electronics => Electronics\n  north => North")
+            unique_preview = pd.DataFrame({"source": sorted(df[column].dropna().astype(str).unique().tolist())[:8], "target": [""] * min(8, df[column].dropna().nunique())})
+            mapping_editor = st.data_editor(
+                unique_preview if not unique_preview.empty else pd.DataFrame({"source": [""], "target": [""]}),
+                num_rows="dynamic",
+                use_container_width=True,
+                key=f"mapping_editor_{column}",
+                column_config={
+                    "source": st.column_config.TextColumn("Source value"),
+                    "target": st.column_config.TextColumn("Replacement value"),
+                },
+            )
             map_to_other = st.checkbox("Set unmatched values to Other", value=False)
             if st.button("Apply mapping"):
-                mapping = parse_mapping_text(mapping_text)
+                mapping = mapping_from_editor(mapping_editor)
                 updated = df.copy()
                 mapped = updated[column].map(mapping)
                 updated[column] = mapped.fillna("Other") if map_to_other else updated[column].replace(mapping)
@@ -508,14 +631,13 @@ def render_cleaning_preparation() -> None:
             apply_update(updated, "drop_columns", {"columns": drop_cols}, drop_cols)
             st.rerun()
 
-        st.caption("Formula examples: revenue / quantity, profit - profit.mean(), sales_amount.fillna(0)")
+        st.caption("Formula examples: revenue / quantity, log(sales_amount), profit - profit.mean(), sales_amount.fillna(0)")
         formula_name = st.text_input("New formula column name")
-        formula_expr = st.text_input("Formula using pandas eval syntax")
+        formula_expr = st.text_input("Formula expression")
         if st.button("Create formula column") and formula_name and formula_expr:
             try:
                 updated = df.copy()
-                local_df = updated.copy()
-                updated[formula_name] = local_df.eval(formula_expr)
+                updated[formula_name] = evaluate_formula_expression(updated, formula_expr)
                 apply_update(updated, "create_formula_column", {"new_column": formula_name, "expression": formula_expr}, [formula_name])
                 st.rerun()
             except Exception as exc:
@@ -627,6 +749,38 @@ def render_visualization_builder() -> None:
     if df is None:
         return
 
+    with st.expander("Optional AI Assistant"):
+        enable_ai = st.checkbox("Enable AI assistant")
+        st.caption("AI suggestions are optional and may be imperfect. The app works fully without AI.")
+        fixed_ai_model = "gpt-4.1-nano"
+        fixed_temperature = 0.1
+        ai_goal = st.text_area(
+            "What kind of chart do you want?",
+            placeholder="Example: Show the relationship between sales and profit over time, grouped by region.",
+            disabled=not enable_ai,
+        )
+        st.text_input("OpenAI model", value=fixed_ai_model, disabled=True)
+        st.text_input("Temperature", value="0.1", disabled=True)
+        if st.button("Suggest chart with AI", disabled=not enable_ai, use_container_width=True):
+            try:
+                suggestion = get_chart_suggestion_from_openai(df, ai_goal, fixed_ai_model, fixed_temperature)
+                st.session_state.ai_chart_suggestion = normalize_chart_suggestion(df, suggestion)
+            except Exception as exc:
+                st.error(f"AI suggestion failed: {exc}")
+
+        suggestion = st.session_state.get("ai_chart_suggestion")
+        if suggestion:
+            st.subheader("AI suggestion")
+            st.json(suggestion)
+            if st.button("Apply AI suggestion", use_container_width=True):
+                st.session_state.viz_plot_type = suggestion["plot_type"]
+                st.session_state.viz_x = suggestion["x_col"]
+                st.session_state.viz_y = suggestion["y_col"]
+                st.session_state.viz_group = suggestion["group_col"]
+                st.session_state.viz_agg = suggestion["aggregation"]
+                st.session_state.viz_title = suggestion["title"]
+                st.rerun()
+
     filtered_df = df.copy()
     with st.sidebar:
         st.subheader("Visualization filters")
@@ -651,6 +805,7 @@ def render_visualization_builder() -> None:
     plot_type = st.selectbox(
         "Plot type",
         ["histogram", "box_plot", "scatter_plot", "line_chart", "bar_chart", "heatmap_correlation"],
+        key="viz_plot_type",
     )
     cols1, cols2, cols3, cols4 = st.columns(4)
     with cols1:
@@ -661,8 +816,8 @@ def render_visualization_builder() -> None:
     with cols3:
         group_col = st.selectbox("Color / Group", ["None"] + filtered_df.columns.tolist(), key="viz_group")
     with cols4:
-        agg = st.selectbox("Aggregation", ["none", "sum", "mean", "count", "median"])
-    custom_title = st.text_input("Plot title (optional)", placeholder="Enter a custom chart title")
+        agg = st.selectbox("Aggregation", ["none", "sum", "mean", "count", "median"], key="viz_agg")
+    custom_title = st.text_input("Plot title (optional)", placeholder="Enter a custom chart title", key="viz_title")
 
     top_n = st.slider("Top N categories for bar charts", 3, 30, 10)
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -853,3 +1008,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

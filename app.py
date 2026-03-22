@@ -318,7 +318,7 @@ def normalize_chart_suggestion(df: pd.DataFrame, suggestion: dict) -> dict:
 
 
 def render_upload_overview() -> None:
-    st.header("Page A - Upload & Overview")
+    st.header("Upload & Overview")
     left, middle, right = st.columns([2, 2, 1])
     with left:
         uploaded = st.file_uploader("Upload CSV, XLSX, or JSON", type=["csv", "xlsx", "json"])
@@ -391,7 +391,7 @@ def render_upload_overview() -> None:
 
 
 def render_cleaning_preparation() -> None:
-    st.header("Page B - Cleaning & Preparation Studio")
+    st.header("Cleaning & Preparation Studio")
     df = require_dataframe()
     if df is None:
         return
@@ -744,12 +744,12 @@ def render_cleaning_preparation() -> None:
 
 
 def render_visualization_builder() -> None:
-    st.header("Page C - Visualization Builder")
+    st.header("Visualization Builder")
     df = require_dataframe()
     if df is None:
         return
 
-    with st.expander("Optional AI Assistant"):
+    with st.expander("AI Assistant"):
         enable_ai = st.checkbox("Enable AI assistant")
         st.caption("AI suggestions are optional and may be imperfect. The app works fully without AI.")
         fixed_ai_model = "gpt-4.1-nano"
@@ -942,7 +942,7 @@ def render_visualization_builder() -> None:
 
 
 def render_export_report() -> None:
-    st.header("Page D - Export & Report")
+    st.header("Export & Report")
     df = require_dataframe()
     if df is None:
         return
@@ -993,14 +993,14 @@ def main() -> None:
 
     page = st.sidebar.radio(
         "Navigate",
-        ["Page A - Upload & Overview", "Page B - Cleaning & Preparation Studio", "Page C - Visualization Builder", "Page D - Export & Report"],
+        ["Upload & Overview", "Cleaning & Preparation Studio", "Visualization Builder", "Export & Report"],
     )
 
-    if page == "Page A - Upload & Overview":
+    if page == "Upload & Overview":
         render_upload_overview()
-    elif page == "Page B - Cleaning & Preparation Studio":
+    elif page == "Cleaning & Preparation Studio":
         render_cleaning_preparation()
-    elif page == "Page C - Visualization Builder":
+    elif page == "Visualization Builder":
         render_visualization_builder()
     else:
         render_export_report()
@@ -1008,4 +1008,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+ 
 
